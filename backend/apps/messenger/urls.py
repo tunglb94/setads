@@ -10,4 +10,7 @@ urlpatterns = [
     path("leads/stats/", views.lead_stats_by_adset, name="lead-stats"),
     path("leads/deep-funnel/", views.deep_funnel_by_ad, name="deep-funnel"),
     path("leads/score-all/", views.score_all_unscored, name="score-all"),
+    path("appointments/", views.AppointmentListView.as_view(), name="appointment-list"),
+    path("appointments/scan/", views.scan_appointments, name="appointment-scan"),
+    path("appointments/<int:pk>/", views.AppointmentDetailView.as_view(), name="appointment-detail"),
 ]

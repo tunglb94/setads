@@ -2,18 +2,20 @@
 import { useState } from "react";
 import {
   Phone, Mail, Flame, Thermometer, Snowflake, RefreshCw,
-  Users, MessageCircle, MessageSquare, Settings, DownloadCloud,
-  CheckCircle2, ExternalLink, Brain, AlertCircle, TrendingUp,
+  Users, MessageCircle, Settings,
+  CheckCircle2, Brain, AlertCircle, TrendingUp,
   TrendingDown, Minus, Zap,
 } from "lucide-react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { useFilterStore } from "@/store/useFilterStore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
-  useLeadStats, useConversations, useCommentLeads,
-  useSetupPages, useSyncComments, useDeepFunnel, useScoreAll,
-  LeadScore, Conversation, PageComment, LeadStats, DeepFunnelMetrics,
+  useLeadStats, useConversations,
+  useSetupPages, useDeepFunnel, useScoreAll,
+  LeadScore, Conversation, LeadStats, DeepFunnelMetrics,
 } from "@/hooks/queries/useLeads";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -76,22 +78,18 @@ function AdSetCard({ s, selected, onClick }: { s: LeadStats; selected: boolean; 
       )}
     >
       <p className="font-semibold text-gray-900 text-sm truncate mb-3" title={s.adset_name}>{s.adset_name}</p>
-      <div className="grid grid-cols-4 gap-1 text-center">
+      <div className="grid grid-cols-3 gap-1 text-center">
         <div>
-          <p className="text-base font-bold tabular-nums text-violet-700">{s.total_leads}</p>
-          <p className="text-[10px] text-gray-400">Tổng</p>
-        </div>
-        <div>
-          <p className="text-base font-bold tabular-nums text-blue-600">{s.inbox_leads}</p>
+          <p className="text-base font-bold tabular-nums text-violet-700">{s.inbox_leads}</p>
           <p className="text-[10px] text-gray-400">Inbox</p>
-        </div>
-        <div>
-          <p className="text-base font-bold tabular-nums text-orange-500">{s.comment_leads}</p>
-          <p className="text-[10px] text-gray-400">Comment</p>
         </div>
         <div>
           <p className="text-base font-bold tabular-nums text-red-500">{s.hot_leads}</p>
           <p className="text-[10px] text-gray-400">HOT</p>
+        </div>
+        <div>
+          <p className="text-base font-bold tabular-nums text-green-600">{s.qualified_leads}</p>
+          <p className="text-[10px] text-gray-400">Có SĐT</p>
         </div>
       </div>
       <div className="mt-2 bg-gray-100 rounded-full h-1.5 overflow-hidden">
@@ -226,95 +224,6 @@ function InboxTab({ adsetId }: { adsetId?: string }) {
   );
 }
 
-// ── Comments tab ───────────────────────────────────────────────────────────────
-function CommentsTab({ adsetId }: { adsetId?: string }) {
-  const { data: comments, isLoading } = useCommentLeads(adsetId);
-
-  if (isLoading) return (
-    <div className="divide-y">{Array.from({ length: 5 }).map((_, i) => (
-      <div key={i} className="flex gap-4 px-4 py-3">
-        {Array.from({ length: 5 }).map((_, j) => <Skeleton key={j} className="h-4 w-24" />)}
-      </div>
-    ))}</div>
-  );
-
-  if (!comments?.length) return (
-    <div className="text-center py-16 text-gray-400 space-y-2">
-      <MessageSquare className="h-10 w-10 mx-auto opacity-20" />
-      <p className="text-sm font-medium">Chưa có comment nào được sync.</p>
-      <p className="text-xs max-w-xs mx-auto leading-relaxed">
-        Cần thêm permission <code className="bg-gray-100 px-1 rounded text-gray-600">pages_read_engagement</code> trong Meta Developer Portal,
-        sau đó nhấn <strong>Sync Comments</strong>.
-      </p>
-    </div>
-  );
-
-  const qualified = comments.filter((c: PageComment) => c.is_qualified).length;
-
-  return (
-    <div>
-      <div className="px-4 py-2 bg-gray-50 border-b flex items-center gap-4 text-xs text-gray-500">
-        <span>{comments.length} comments</span>
-        <span className="text-green-600 font-semibold">{qualified} có SĐT ({Math.round(qualified / comments.length * 100)}%)</span>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 border-b">
-              {["Người comment", "Nội dung comment", "SĐT (extract)", "Adset nguồn", "Page", "Thời gian"].map(h => (
-                <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {comments.map((c: PageComment) => (
-              <tr key={c.id} className={cn("hover:bg-gray-50 transition-colors", c.is_qualified && "bg-green-50/30")}>
-                <td className="px-4 py-3">
-                  <p className="font-semibold text-gray-900 text-sm">{c.user_name || "—"}</p>
-                  {c.is_qualified && (
-                    <span className="text-[10px] text-green-600 font-medium flex items-center gap-0.5">
-                      <CheckCircle2 className="h-2.5 w-2.5" /> Có SĐT
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-3 max-w-[280px]">
-                  <p className="text-xs text-gray-700 line-clamp-2 leading-relaxed" title={c.text}>
-                    {c.text || <span className="text-gray-300">Trống</span>}
-                  </p>
-                </td>
-                <td className="px-4 py-3">
-                  {c.phone_number ? (
-                    <div className="flex items-center gap-1 text-green-700 font-mono text-xs font-bold">
-                      <Phone className="h-3 w-3" />{c.phone_number}
-                    </div>
-                  ) : (
-                    <span className="text-gray-300 text-xs">—</span>
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  {c.adset_id ? (
-                    <a
-                      href={`/adsets/${c.adset_id}`}
-                      className="text-xs text-violet-600 hover:underline flex items-center gap-0.5"
-                      onClick={e => e.stopPropagation()}
-                    >
-                      {c.adset_id.slice(0, 12)}… <ExternalLink className="h-2.5 w-2.5" />
-                    </a>
-                  ) : (
-                    <span className="text-gray-300 text-xs">Chưa link</span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-xs text-gray-500">{(c as any).page_name}</td>
-                <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{fmtTime(c.commented_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
 // ── Deep Funnel tab ────────────────────────────────────────────────────────────
 function DeepFunnelTab({ adsetId }: { adsetId?: string }) {
   const { data: ads, isLoading } = useDeepFunnel(adsetId);
@@ -444,20 +353,18 @@ function DeepFunnelTab({ adsetId }: { adsetId?: string }) {
 
 // ── Main page ──────────────────────────────────────────────────────────────────
 export default function LeadsPage() {
-  const [tab, setTab] = useState<"inbox" | "comments" | "deepfunnel">("inbox");
+  const [tab, setTab] = useState<"inbox" | "deepfunnel">("inbox");
   const [selectedAdset, setSelectedAdset] = useState<string | undefined>();
   const queryClient = useQueryClient();
 
+  const { leadsDateRange, leadsCustomStart, leadsCustomEnd, setLeadsDateRange, setLeadsCustomDates } = useFilterStore();
   const { data: stats, isLoading: statsLoading } = useLeadStats();
   const { mutate: setupPages, isPending: settingUp } = useSetupPages();
-  const { mutate: syncComments, isPending: syncing } = useSyncComments();
   const { mutate: scoreAll, isPending: scoring } = useScoreAll();
 
-  const totalLeads    = stats?.reduce((a: number, s: LeadStats) => a + s.total_leads, 0) ?? 0;
-  const totalInbox    = stats?.reduce((a: number, s: LeadStats) => a + s.inbox_leads, 0) ?? 0;
-  const totalComments = stats?.reduce((a: number, s: LeadStats) => a + s.comment_leads, 0) ?? 0;
-  const totalHot      = stats?.reduce((a: number, s: LeadStats) => a + s.hot_leads, 0) ?? 0;
-  const totalQual     = stats?.reduce((a: number, s: LeadStats) => a + s.qualified_leads, 0) ?? 0;
+  const totalLeads = stats?.reduce((a: number, s: LeadStats) => a + s.inbox_leads, 0) ?? 0;
+  const totalHot   = stats?.reduce((a: number, s: LeadStats) => a + s.hot_leads, 0) ?? 0;
+  const totalQual  = stats?.reduce((a: number, s: LeadStats) => a + s.qualified_leads, 0) ?? 0;
 
   return (
     <div className="space-y-5">
@@ -465,7 +372,7 @@ export default function LeadsPage() {
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Lead Intelligence</h1>
-          <p className="text-sm text-gray-400 mt-0.5">Inbox · Comments · Deep Funnel AI · True CPL</p>
+          <p className="text-sm text-gray-400 mt-0.5">Inbox · Deep Funnel AI · True CPL</p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <Button
@@ -478,17 +385,6 @@ export default function LeadsPage() {
               ? <span className="h-3.5 w-3.5 rounded-full border-2 border-violet-500 border-t-transparent animate-spin" />
               : <Settings className="h-3.5 w-3.5" />}
             {settingUp ? "Đang setup..." : "Setup Pages & Webhook"}
-          </Button>
-          <Button
-            variant="outline" size="sm"
-            className="gap-2 text-blue-700 border-blue-200 hover:bg-blue-50"
-            onClick={() => syncComments(undefined)}
-            disabled={syncing}
-          >
-            {syncing
-              ? <span className="h-3.5 w-3.5 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
-              : <DownloadCloud className="h-3.5 w-3.5" />}
-            {syncing ? "Đang sync..." : "Sync Comments"}
           </Button>
           <Button
             variant="outline" size="sm"
@@ -512,11 +408,20 @@ export default function LeadsPage() {
         </div>
       </div>
 
+      {/* Date filter */}
+      <div className="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 px-4 py-3 shadow-sm">
+        <DateRangeFilter
+          value={leadsDateRange}
+          customStart={leadsCustomStart}
+          customEnd={leadsCustomEnd}
+          onChange={setLeadsDateRange}
+          onCustomChange={setLeadsCustomDates}
+        />
+      </div>
+
       {/* Summary stat cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        <StatCard label="Tổng leads" value={totalLeads} sub="Inbox + Comment" color="text-violet-700" />
-        <StatCard label="Inbox" value={totalInbox} sub="Tin nhắn Messenger" color="text-blue-600" />
-        <StatCard label="Comments" value={totalComments} sub="Bình luận bài viết" color="text-orange-500" />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatCard label="Tổng inbox" value={totalLeads} sub="Tin nhắn Messenger" color="text-violet-700" />
         <StatCard label="HOT" value={totalHot} sub="Cần follow up ngay" color="text-red-600" />
         <StatCard
           label="Có SĐT"
@@ -524,6 +429,7 @@ export default function LeadsPage() {
           sub={`${totalQual} / ${totalLeads} leads`}
           color="text-green-600"
         />
+        <StatCard label="Warm" value={stats?.reduce((a: number, s: LeadStats) => a + s.warm_leads, 0) ?? 0} sub="Tiềm năng" color="text-orange-500" />
       </div>
 
       {/* AdSet breakdown */}
@@ -564,9 +470,8 @@ export default function LeadsPage() {
         {/* Tab bar */}
         <div className="flex items-center border-b border-gray-100 px-4 gap-0">
           {([
-            { key: "inbox",      label: "Inbox / Messenger", icon: MessageCircle,  count: totalInbox,    countCls: "bg-blue-100 text-blue-700" },
-            { key: "comments",   label: "Comments",          icon: MessageSquare,  count: totalComments, countCls: "bg-orange-100 text-orange-700" },
-            { key: "deepfunnel", label: "Deep Funnel AI",    icon: Brain,          count: null,          countCls: "" },
+            { key: "inbox",      label: "Inbox / Messenger", icon: MessageCircle, count: totalLeads, countCls: "bg-blue-100 text-blue-700" },
+            { key: "deepfunnel", label: "Deep Funnel AI",    icon: Brain,         count: null,       countCls: "" },
           ] as const).map(({ key, label, icon: Icon, count, countCls }) => (
             <button
               key={key}
@@ -591,7 +496,6 @@ export default function LeadsPage() {
 
         {/* Tab content */}
         {tab === "inbox" && <InboxTab adsetId={selectedAdset} />}
-        {tab === "comments" && <CommentsTab adsetId={selectedAdset} />}
         {tab === "deepfunnel" && <DeepFunnelTab adsetId={selectedAdset} />}
       </div>
     </div>

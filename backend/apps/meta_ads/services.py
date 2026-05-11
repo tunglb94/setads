@@ -191,8 +191,50 @@ def sync_insights_to_db(account: AdAccount, days: int = 3) -> int:
 
     # Also upsert Campaign + AdSet objects from the insight rows
     _upsert_campaign_adset_objects(account, raw_rows)
+    _sync_adset_budgets(account)
 
     return count
+
+
+def _sync_adset_budgets(account: AdAccount) -> None:
+    """Fetch budget AND status from Meta for campaigns and adsets, update DB."""
+    from facebook_business.adobjects.adaccount import AdAccount as FBAdAccount
+    _init_api(account.access_token)
+    fb_account = FBAdAccount(f"act_{account.account_id.replace('act_', '')}")
+    try:
+        # Campaign-level budget + status (CBO)
+        campaigns = fb_account.get_campaigns(fields=["id", "name", "status", "daily_budget", "lifetime_budget"])
+        for camp in campaigns:
+            campaign_id = camp.get("id")
+            if not campaign_id:
+                continue
+            updates = {}
+            raw_budget = camp.get("daily_budget") or camp.get("lifetime_budget")
+            if raw_budget:
+                updates["daily_budget"] = Decimal(str(raw_budget))
+            meta_status = camp.get("status", "").upper()
+            if meta_status in ("ACTIVE", "PAUSED", "ARCHIVED", "DELETED"):
+                updates["status"] = meta_status
+            if updates:
+                Campaign.objects.filter(campaign_id=campaign_id).update(**updates)
+
+        # Adset-level budget + status
+        adsets = fb_account.get_ad_sets(fields=["id", "name", "status", "daily_budget", "lifetime_budget"])
+        for adset in adsets:
+            adset_id = adset.get("id")
+            if not adset_id:
+                continue
+            updates = {}
+            raw_budget = adset.get("daily_budget") or adset.get("lifetime_budget")
+            if raw_budget:
+                updates["daily_budget"] = Decimal(str(raw_budget))
+            meta_status = adset.get("status", "").upper()
+            if meta_status in ("ACTIVE", "PAUSED", "ARCHIVED", "DELETED"):
+                updates["status"] = meta_status
+            if updates:
+                AdSet.objects.filter(adset_id=adset_id).update(**updates)
+    except Exception as exc:
+        logger.warning("Failed to sync budgets/statuses: %s", exc)
 
 
 def _upsert_campaign_adset_objects(account: AdAccount, insight_rows: list[dict]) -> None:
@@ -450,25 +492,40 @@ def sync_ad_post_mappings(account: AdAccount) -> int:
     return count
 
 
-def get_ads_insights_for_adset(adset_id: str, days: int = 7) -> list[dict]:
+def get_ads_insights_for_adset(
+    adset_id: str,
+    days: int = 7,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> list[dict]:
     """Return aggregated per-ad metrics for all ads in an AdSet from DB."""
     from datetime import date, timedelta
     from django.db.models import Sum, Avg
-    cutoff = date.today() - timedelta(days=days)
 
     ad_ids = list(Ad.objects.filter(adset__adset_id=adset_id).values_list("ad_id", flat=True))
     if not ad_ids:
         return []
 
+    qs = AdInsight.objects.filter(entity_id__in=ad_ids, level=AdInsight.Level.AD)
+    if date_from or date_to:
+        if date_from:
+            qs = qs.filter(date__gte=date_from)
+        if date_to:
+            qs = qs.filter(date__lte=date_to)
+    else:
+        cutoff = date.today() - timedelta(days=days)
+        qs = qs.filter(date__gte=cutoff)
+
     rows = (
-        AdInsight.objects
-        .filter(entity_id__in=ad_ids, level=AdInsight.Level.AD, date__gte=cutoff)
+        qs
         .values("entity_id")
         .annotate(
             total_spend=Sum("spend"),
             total_impressions=Sum("impressions"),
             total_clicks=Sum("clicks"),
             total_conversions=Sum("conversions"),
+            total_message_count=Sum("message_count"),
+            total_comment_count=Sum("comment_count"),
             avg_ctr=Avg("ctr"),
             avg_cpc=Avg("cpc"),
             avg_cpa=Avg("cpa"),
@@ -503,12 +560,18 @@ def get_ads_insights_for_adset(adset_id: str, days: int = 7) -> list[dict]:
             "impressions": int(r["total_impressions"] or 0),
             "clicks": int(r["total_clicks"] or 0),
             "conversions": int(r["total_conversions"] or 0),
+            "message_count": int(r["total_message_count"] or 0),
+            "comment_count": int(r["total_comment_count"] or 0),
             "ctr": float(r["avg_ctr"] or 0),
             "cpc": float(r["avg_cpc"] or 0),
             "cpa": float(r["avg_cpa"] or 0),
             "roas": float(r["avg_roas"] or 0),
             "frequency": float(r["avg_frequency"] or 0),
         })
+        result[-1]["cost_per_message"] = (
+            round(result[-1]["spend"] / (result[-1]["message_count"] + result[-1]["comment_count"]))
+            if (result[-1]["message_count"] + result[-1]["comment_count"]) > 0 else None
+        )
 
     result.sort(key=lambda x: x["spend"], reverse=True)
     return result

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Conversation, Message, LeadScore, PageComment
+from .models import Conversation, Message, LeadScore, PageComment, Appointment
 
 
 class LeadScoreSerializer(serializers.ModelSerializer):
@@ -26,6 +26,26 @@ class PageCommentSerializer(serializers.ModelSerializer):
             "user_name", "text", "phone_number", "is_qualified",
             "commented_at", "page_name",
         ]
+
+
+class AppointmentSerializer(serializers.ModelSerializer):
+    page_name = serializers.CharField(source="page.name", read_only=True)
+    patient_name_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Appointment
+        fields = [
+            "id", "page_name", "adset_id", "patient_name", "patient_name_display",
+            "phone", "appointment_date", "appointment_time", "service",
+            "status", "detected_at",
+        ]
+
+    def get_patient_name_display(self, obj):
+        if obj.patient_name:
+            return obj.patient_name
+        if obj.conversation and obj.conversation.user_name:
+            return obj.conversation.user_name
+        return "Khách hàng"
 
 
 class ConversationSerializer(serializers.ModelSerializer):

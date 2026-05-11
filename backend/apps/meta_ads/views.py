@@ -16,8 +16,8 @@ class AdSetListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = AdSet.objects.select_related("campaign__account").filter(
-            campaign__status="ACTIVE"
+        qs = AdSet.objects.select_related("campaign__account").exclude(
+            campaign__status__in=["DELETED", "ARCHIVED"]
         ).order_by("-updated_at")
 
         status_filter = self.request.query_params.get("status")
@@ -29,6 +29,14 @@ class AdSetListView(generics.ListAPIView):
             qs = qs.filter(name__icontains=search)
 
         return qs
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["date_from"] = self.request.query_params.get("date_from")
+        ctx["date_to"] = self.request.query_params.get("date_to")
+        days_str = self.request.query_params.get("days")
+        ctx["days"] = int(days_str) if days_str else 3
+        return ctx
 
 
 class AdSetDetailView(generics.RetrieveAPIView):
@@ -71,14 +79,23 @@ def adset_insights(request, adset_id: str):
 def account_stats_summary(request):
     """
     Aggregate stats across all AdSets for the given date range.
-    Query param: days (default 3).
+    Query params: days (default 3), or date_from + date_to (YYYY-MM-DD) for custom range.
     """
-    days = int(request.query_params.get("days", 3))
-    cutoff = date.today() - timedelta(days=days)
+    date_from = request.query_params.get("date_from")
+    date_to = request.query_params.get("date_to")
+
+    if date_from and date_to:
+        cutoff = date.fromisoformat(date_from)
+        end_date = date.fromisoformat(date_to)
+        date_filter = {"date__gte": cutoff, "date__lte": end_date}
+    else:
+        days = int(request.query_params.get("days", 3))
+        cutoff = date.today() - timedelta(days=days)
+        date_filter = {"date__gte": cutoff}
 
     agg = AdInsight.objects.filter(
         level=AdInsight.Level.ADSET,
-        date__gte=cutoff,
+        **date_filter,
     ).aggregate(
         total_spend=Sum("spend"),
         total_conversions=Sum("conversions"),
@@ -105,8 +122,10 @@ def account_stats_summary(request):
 @permission_classes([IsAuthenticated])
 def adset_ads(request, adset_id: str):
     """Return aggregated per-ad metrics for all ads in an AdSet."""
+    date_from = request.query_params.get("date_from")
+    date_to = request.query_params.get("date_to")
     days = int(request.query_params.get("days", 7))
-    data = get_ads_insights_for_adset(adset_id, days=days)
+    data = get_ads_insights_for_adset(adset_id, days=days, date_from=date_from, date_to=date_to)
     return Response(data)
 
 

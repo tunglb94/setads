@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: "📊" },
   { href: "/leads", label: "Lead Intelligence", icon: "💬" },
   { href: "/leads/deep-funnel", label: "Deep Funnel AI", icon: "🧠" },
+  { href: "/appointments", label: "Lịch hẹn", icon: "📅" },
   { href: "/logs", label: "Automation Logs", icon: "📋" },
 ];
 

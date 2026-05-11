@@ -62,6 +62,9 @@ export interface Insight {
   cpa: number;
   roas: number;
   frequency?: number;
+  message_count?: number;
+  comment_count?: number;
+  cost_per_message?: number | null;
 }
 
 export interface AdSet {
@@ -70,6 +73,7 @@ export interface AdSet {
   name: string;
   status: "ACTIVE" | "PAUSED" | "DELETED" | "ARCHIVED";
   campaign_name: string;
+  campaign_status: "ACTIVE" | "PAUSED" | "DELETED" | "ARCHIVED";
   account_name: string;
   daily_budget: number | null;
   ai_decision: "PAUSE" | "KEEP" | "SCALE" | "CREATIVE_REFRESH" | "";
@@ -78,6 +82,27 @@ export interface AdSet {
   ai_analyzed_at: string | null;
   auto_paused: boolean;
   latest_insight: Insight | null;
+  campaign_daily_budget?: number | null;
+}
+
+export interface AdData {
+  ad_id: string;
+  ad_name: string;
+  status: string;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  message_count: number;
+  comment_count: number;
+  cost_per_message: number | null;
+  ctr: number;
+  cpc: number;
+  cpa: number;
+  roas: number;
+  frequency: number;
+  ai_decision: string;
+  ai_confidence: number | null;
 }
 
 export interface PaginatedResponse<T> {
@@ -134,6 +159,8 @@ export const adsetApi = {
     status?: string;
     search?: string;
     days?: number;
+    date_from?: string;
+    date_to?: string;
     page?: number;
     page_size?: number;
   }) => api.get<PaginatedResponse<AdSet>>("/adsets/", { params }),
@@ -149,6 +176,9 @@ export const adsetApi = {
 
   analyzeNow: (adsetId: string) =>
     api.post<{ task_id: string; adset_id: string }>(`/adsets/${adsetId}/analyze/`),
+
+  ads: (adsetId: string, params?: { days?: number; date_from?: string; date_to?: string }) =>
+    api.get<AdData[]>(`/adsets/${adsetId}/ads/`, { params }),
 };
 
 export const taskApi = {
@@ -175,10 +205,35 @@ export interface AccountSummary {
 }
 
 export const statsApi = {
-  summary: (days = 3) =>
-    api.get<AccountSummary>("/stats/summary/", { params: { days } }),
+  summary: (params: { days?: number; date_from?: string; date_to?: string } = { days: 3 }) =>
+    api.get<AccountSummary>("/stats/summary/", { params }),
   syncNow: () =>
     api.post<{ synced_rows: number; accounts: number }>("/sync/"),
+};
+
+export interface Appointment {
+  id: number;
+  page_name: string;
+  adset_id: string;
+  patient_name: string;
+  patient_name_display: string;
+  phone: string;
+  appointment_date: string | null;
+  appointment_time: string;
+  service: string;
+  status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
+  detected_at: string;
+}
+
+export const appointmentApi = {
+  list: (params?: { date_from?: string; date_to?: string; days?: number; adset_id?: string; page_size?: number }) =>
+    api.get<PaginatedResponse<Appointment>>("/appointments/", { params }),
+
+  scan: () =>
+    api.post<{ scanned: number; appointments_created: number }>("/appointments/scan/"),
+
+  updateStatus: (id: number, status: Appointment["status"]) =>
+    api.patch(`/appointments/${id}/`, { status }),
 };
 
 export const authApi = {

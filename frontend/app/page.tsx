@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAdSets } from "@/hooks/queries/useAdSets";
 import { useAccountSummary } from "@/hooks/queries/useAccountSummary";
-import { useFilterStore, DateRangeOption } from "@/store/useFilterStore";
+import { useFilterStore, DateRangeOption, resolveDateParams } from "@/store/useFilterStore";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { useQueryClient } from "@tanstack/react-query";
 import AdSetDataTable from "@/components/AdSetDataTable";
 import AIAnalysisSheet from "@/components/AIAnalysisSheet";
@@ -18,6 +19,7 @@ const DATE_OPTIONS: { label: string; value: DateRangeOption }[] = [
   { label: "3 ngày", value: 3 },
   { label: "7 ngày", value: 7 },
   { label: "30 ngày", value: 30 },
+  { label: "Tuỳ chỉnh", value: "custom" },
 ];
 
 const STATUS_OPTIONS = ["ALL", "ACTIVE", "PAUSED"] as const;
@@ -77,7 +79,8 @@ function StatCard({
 // ── Dashboard ──────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const { dateRange, statusFilter, setDateRange, setStatusFilter } = useFilterStore();
+  const { dateRange, customStart, customEnd, statusFilter, setDateRange, setCustomDates, setStatusFilter } = useFilterStore();
+  const dateParams = resolveDateParams(dateRange, customStart, customEnd);
   const [aiResult, setAiResult] = useState<AIAnalysisResult | null>(null);
   const [aiSheetOpen, setAiSheetOpen] = useState(false);
   const [analyzingAdsetName, setAnalyzingAdsetName] = useState<string>();
@@ -86,7 +89,7 @@ export default function DashboardPage() {
   const [syncing, setSyncing] = useState(false);
 
   const { data, isLoading, isFetching, refetch } = useAdSets();
-  const { data: summary, isLoading: summaryLoading, refetch: refetchSummary } = useAccountSummary(dateRange);
+  const { data: summary, isLoading: summaryLoading, refetch: refetchSummary } = useAccountSummary(dateParams);
 
   const handleSyncNow = async () => {
     setSyncing(true);
@@ -117,7 +120,10 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">AdSet Dashboard</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            {total} AdSets · {dateRange} ngày gần nhất
+            {total} AdSets ·{" "}
+            {dateRange === "custom" && customStart && customEnd
+              ? `${customStart} → ${customEnd}`
+              : `${dateRange} ngày gần nhất`}
           </p>
         </div>
         <div className="flex gap-2 self-start">
@@ -134,21 +140,14 @@ export default function DashboardPage() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 px-4 py-3 shadow-sm">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-xs text-gray-500 font-medium">Thời gian:</span>
-          {DATE_OPTIONS.map(({ label, value }) => (
-            <button
-              key={value}
-              onClick={() => setDateRange(value)}
-              className={cn(
-                "px-3 py-1 rounded-lg text-xs font-semibold transition-colors",
-                dateRange === value ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <DateRangeFilter
+          value={dateRange}
+          customStart={customStart}
+          customEnd={customEnd}
+          onChange={setDateRange}
+          onCustomChange={setCustomDates}
+          extraPresets={DATE_OPTIONS}
+        />
         <div className="w-px h-5 bg-gray-200 hidden sm:block" />
         <div className="flex items-center gap-1.5">
           <Filter className="h-3.5 w-3.5 text-gray-400" />

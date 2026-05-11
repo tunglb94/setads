@@ -102,6 +102,38 @@ class PageComment(models.Model):
         return f"{self.user_name}: {self.text[:50]}"
 
 
+class Appointment(models.Model):
+    """
+    Appointment confirmed by staff — detected from outbound message pattern
+    "E xin xác nhận lịch hẹn với chị..."
+    """
+    class Status(models.TextChoices):
+        SCHEDULED = "SCHEDULED", "Đã đặt lịch"
+        COMPLETED = "COMPLETED", "Đã thực hiện"
+        CANCELLED = "CANCELLED", "Đã huỷ"
+
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.CASCADE, related_name="appointments", null=True, blank=True
+    )
+    page = models.ForeignKey(FacebookPage, on_delete=models.CASCADE)
+    adset_id = models.CharField(max_length=50, blank=True, db_index=True)
+    patient_name = models.CharField(max_length=255, blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    appointment_date = models.DateField(null=True, blank=True)
+    appointment_time = models.CharField(max_length=30, blank=True)
+    service = models.TextField(blank=True)
+    raw_message = models.TextField()
+    status = models.CharField(max_length=15, choices=Status.choices, default=Status.SCHEDULED)
+    detected_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "appointments"
+        ordering = ["-detected_at"]
+
+    def __str__(self):
+        return f"{self.patient_name or '?'} | {self.appointment_date} | {self.service[:30]}"
+
+
 class LeadScore(models.Model):
     """
     AI-generated quality score for a lead conversation.

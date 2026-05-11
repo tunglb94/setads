@@ -12,7 +12,7 @@ import hmac
 import logging
 import re
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date as date_type
 from typing import Optional
 
 import requests
@@ -34,7 +34,7 @@ def _appsecret_proof(access_token: str) -> str:
 
 from django.db import models as django_models
 
-from .models import FacebookPage, Conversation, Message, LeadScore, PageComment
+from .models import FacebookPage, Conversation, Message, LeadScore, PageComment, Appointment
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +281,7 @@ def subscribe_page_to_webhook(page: FacebookPage) -> bool:
     """
     fields = ",".join([
         "messages",
+        "message_echoes",
         "messaging_referrals",
         "messaging_postbacks",
         "message_deliveries",
@@ -395,6 +396,91 @@ def sync_page_comments(page: FacebookPage, days: int = 3) -> int:
     return total
 
 
+# Must match the specific staff confirmation opener, not casual mentions like
+# "gọi lại xác nhận lịch hẹn" in a sales chat.
+_APPT_TRIGGER = re.compile(
+    r'(?:E|em|mình)\s+xin\s+xác\s+nhận\s+lịch\s+hẹn\s+với\s+(?:anh|chị|em|bạn)',
+    re.IGNORECASE,
+)
+_COMPLETED_TRIGGER = re.compile(
+    r'cảm\s+ơn.*đã.*(?:tin\s+tưởng|lựa\s+chọn).*(?:sử\s+dụng|trải\s+nghiệm)\s+dịch\s+vụ',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def extract_appointment_from_message(text: str) -> Optional[dict]:
+    """
+    Parse appointment confirmation message sent by staff.
+    Returns structured dict or None if pattern not found.
+
+    Expected format:
+        E xin xác nhận lịch hẹn với chị
+        Quyen Kieu
+        Sdt: 0939200699
+        Ngày: 12/5/2026, 9h
+        TV Dịch vụ: ultherapy prime
+    """
+    if not _APPT_TRIGGER.search(text):
+        return None
+
+    # Patient name: next non-empty line after "lịch hẹn với anh/chị/em ..."
+    name = ""
+    name_match = re.search(
+        r'lịch\s+hẹn\s+với\s+(?:anh|chị|em|bạn)\s*\n([^\n]+)',
+        text, re.IGNORECASE,
+    )
+    if name_match:
+        name = name_match.group(1).strip()
+    else:
+        # Fallback: name on same line as trigger (stop at newline)
+        inline = re.search(
+            r'lịch\s+hẹn\s+với\s+(?:anh|chị|em|bạn)\s+([^\n]{1,60})',
+            text, re.IGNORECASE,
+        )
+        if inline:
+            name = inline.group(1).strip()
+
+    # Phone: "Sdt: 0939200699" or "SĐT: ..."
+    phone = ""
+    phone_match = re.search(r'[Ss][Đđd][Tt]\s*[:\s]+([0-9][\d\s\-\.]{8,11})', text)
+    if phone_match:
+        phone = re.sub(r'[\s\-\.]', '', phone_match.group(1))
+
+    # Date + time: "Ngày: 12/5/2026, 9h"
+    appointment_date = None
+    appointment_time = ""
+    date_match = re.search(r'[Nn]gày\s*[:\s]\s*([^\n]+)', text)
+    if date_match:
+        date_str = date_match.group(1)
+        dmy = re.search(r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})', date_str)
+        if dmy:
+            try:
+                appointment_date = date_type(int(dmy.group(3)), int(dmy.group(2)), int(dmy.group(1)))
+            except ValueError:
+                pass
+        t = re.search(r'(\d{1,2}h\d{0,2}|\d{1,2}:\d{2})', date_str, re.IGNORECASE)
+        if t:
+            appointment_time = t.group(1)
+
+    # Service: "TV Dịch vụ: ..." or "Dịch vụ: ..."
+    service = ""
+    svc_match = re.search(r'(?:TV\s+)?[Dd]ịch\s+vụ\s*[:\s]\s*([^\n]+)', text)
+    if svc_match:
+        service = svc_match.group(1).strip()
+
+    # Require at least phone OR date — otherwise it's likely a casual mention
+    if not phone and not appointment_date:
+        return None
+
+    return {
+        "patient_name": name,
+        "phone": phone,
+        "appointment_date": appointment_date,
+        "appointment_time": appointment_time,
+        "service": service,
+    }
+
+
 def process_webhook_event(event: dict, page: FacebookPage) -> Optional[Conversation]:
     """
     Process a single messaging event from Facebook webhook.
@@ -402,14 +488,35 @@ def process_webhook_event(event: dict, page: FacebookPage) -> Optional[Conversat
     """
     messaging = event.get("messaging", [{}])[0]
     msg_data = messaging.get("message", {})
+    is_echo = msg_data.get("is_echo", False)
 
-    # Drop echo messages — these are outbound msgs the Page sent via API.
-    # Without this guard, every AI reply triggers another webhook → infinite loop.
-    if msg_data.get("is_echo"):
-        return None
+    # ── Echo (outbound) message — sent by staff from Meta Inbox ──────────────
+    if is_echo:
+        text = msg_data.get("text", "")
+        msg_id = msg_data.get("mid", "")
+        timestamp = messaging.get("timestamp", 0)
+        sent_at = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
+        # recipient is the customer (sender is the page in echo events)
+        recipient_id = messaging.get("recipient", {}).get("id")
+        if not recipient_id or not text or not msg_id:
+            return None
+
+        conv = Conversation.objects.filter(psid=recipient_id, page=page).first()
+        if conv:
+            Message.objects.get_or_create(
+                message_id=msg_id,
+                defaults={
+                    "conversation": conv,
+                    "direction": Message.Direction.OUTBOUND,
+                    "text": text,
+                    "sent_at": sent_at,
+                },
+            )
+            _detect_and_save_appointment(text, conv, page)
+        return conv
 
     sender_id = messaging.get("sender", {}).get("id")
-    # Also drop if sender is the page itself (postback / delivery receipts)
+    # Drop if sender is the page itself (postback / delivery receipts without echo flag)
     if not sender_id or sender_id == page.page_id:
         return None
 
@@ -437,9 +544,8 @@ def process_webhook_event(event: dict, page: FacebookPage) -> Optional[Conversat
         )
     except IntegrityError:
         conv = Conversation.objects.get(psid=sender_id, page=page)
-        created = False
 
-    # Process the message itself (msg_data already extracted above for is_echo check)
+    # Process the inbound message
     text = msg_data.get("text", "")
     msg_id = msg_data.get("mid", "")
     timestamp = messaging.get("timestamp", 0)
@@ -484,7 +590,58 @@ def process_webhook_event(event: dict, page: FacebookPage) -> Optional[Conversat
     return conv
 
 
-def gather_deep_funnel_metrics(ad_id: str) -> dict:
+def _detect_and_save_appointment(text: str, conv: Conversation, page: FacebookPage) -> None:
+    """
+    Run appointment detector on an outbound message. Two patterns trigger an Appointment:
+    1. Appointment confirmation → status=SCHEDULED
+    2. Post-service thank-you  → status=COMPLETED (they already showed up)
+    """
+    # Pattern 1: appointment confirmation
+    appt_data = extract_appointment_from_message(text)
+    if appt_data:
+        Appointment.objects.get_or_create(
+            conversation=conv,
+            appointment_date=appt_data["appointment_date"],
+            defaults={
+                "page": page,
+                "adset_id": conv.referral_adset_id,
+                "patient_name": appt_data["patient_name"],
+                "phone": appt_data["phone"] or conv.phone_number,
+                "appointment_time": appt_data["appointment_time"],
+                "service": appt_data["service"],
+                "raw_message": text,
+                "status": Appointment.Status.SCHEDULED,
+            },
+        )
+        logger.info(
+            "Appointment detected: %s | %s | %s",
+            appt_data["patient_name"], appt_data["appointment_date"], appt_data["service"][:40],
+        )
+        return
+
+    # Pattern 2: post-service thank-you → customer already completed the appointment
+    if _COMPLETED_TRIGGER.search(text):
+        # If an existing SCHEDULED appointment exists for this conversation, mark it completed.
+        # Otherwise create a COMPLETED record (they came without a prior confirmation in our system).
+        existing = Appointment.objects.filter(conversation=conv).order_by("-detected_at").first()
+        if existing and existing.status == Appointment.Status.SCHEDULED:
+            existing.status = Appointment.Status.COMPLETED
+            existing.save(update_fields=["status"])
+            logger.info("Appointment %s marked COMPLETED via thank-you message", existing.id)
+        elif not existing:
+            Appointment.objects.create(
+                conversation=conv,
+                page=page,
+                adset_id=conv.referral_adset_id,
+                patient_name=conv.user_name,
+                phone=conv.phone_number,
+                raw_message=text,
+                status=Appointment.Status.COMPLETED,
+            )
+            logger.info("New COMPLETED appointment created from thank-you message for conv %s", conv.id)
+
+
+def gather_deep_funnel_metrics(ad_id: str, date_from: str | None = None, date_to: str | None = None) -> dict:
     """
     True CPL: combine Meta API spend + conversation count with AI-scored quality data.
 
@@ -497,11 +654,18 @@ def gather_deep_funnel_metrics(ad_id: str) -> dict:
     from datetime import date, timedelta
     from apps.meta_ads.models import AdInsight
 
-    seven_days_ago = date.today() - timedelta(days=7)
+    if date_from and date_to:
+        insight_filter = {"date__gte": date.fromisoformat(date_from), "date__lte": date.fromisoformat(date_to)}
+        conv_date_filter = {"first_message_at__date__gte": date_from, "first_message_at__date__lte": date_to}
+    else:
+        seven_days_ago = date.today() - timedelta(days=7)
+        insight_filter = {"date__gte": seven_days_ago}
+        conv_date_filter = {}
+
     spend_agg = AdInsight.objects.filter(
         entity_id=ad_id,
         level=AdInsight.Level.AD,
-        date__gte=seven_days_ago,
+        **insight_filter,
     ).aggregate(
         total_spend=django_models.Sum("spend"),
         total_impressions=django_models.Sum("impressions"),
@@ -528,14 +692,14 @@ def gather_deep_funnel_metrics(ad_id: str) -> dict:
 
     # ── Quality signals ──────────────────────────────────────────────────────────
     # Webhook-attributed conversations = real inbox messages sent via Messenger
-    attributed = Conversation.objects.filter(referral_ad_id=ad_id)
+    attributed = Conversation.objects.filter(referral_ad_id=ad_id, **conv_date_filter)
     has_attribution = attributed.exists()
 
     if has_attribution:
         total_inbox = attributed.count()
         total_convs = total_inbox
         qualified_convs = attributed.filter(is_qualified=True).count()
-        scores = LeadScore.objects.filter(conversation__referral_ad_id=ad_id)
+        scores = LeadScore.objects.filter(conversation__referral_ad_id=ad_id, **{"conversation__" + k: v for k, v in conv_date_filter.items()})
         scored_count = scores.count()
         hot_count = scores.filter(intent_level="HOT").count()
         warm_count = scores.filter(intent_level="WARM").count()

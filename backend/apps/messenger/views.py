@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import logging
+from datetime import date, timedelta
 
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
@@ -16,8 +17,21 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import FacebookPage, Conversation, PageComment, LeadScore
-from .serializers import ConversationSerializer, PageCommentSerializer
+from .models import FacebookPage, Conversation, Message, PageComment, LeadScore, Appointment
+from .serializers import ConversationSerializer, PageCommentSerializer, AppointmentSerializer
+
+
+def _resolve_date_range(query_params) -> tuple[str | None, str | None]:
+    """Return (date_from, date_to) strings from query params. Supports both days= and date_from/date_to=."""
+    date_from = query_params.get("date_from")
+    date_to = query_params.get("date_to")
+    if date_from or date_to:
+        return date_from, date_to
+    days = query_params.get("days")
+    if days:
+        cutoff = (date.today() - timedelta(days=int(days))).isoformat()
+        return cutoff, date.today().isoformat()
+    return None, None
 from .services import (
     process_webhook_event,
     sync_pages_from_meta,
@@ -112,6 +126,11 @@ class ConversationListView(generics.ListAPIView):
             qs = qs.filter(is_qualified=qualified.lower() == "true")
         if intent := self.request.query_params.get("intent"):
             qs = qs.filter(lead_score__intent_level=intent.upper())
+        date_from, date_to = _resolve_date_range(self.request.query_params)
+        if date_from:
+            qs = qs.filter(first_message_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(first_message_at__date__lte=date_to)
 
         return qs
 
@@ -191,6 +210,11 @@ class PageCommentListView(generics.ListAPIView):
             qs = qs.filter(adset_id=adset_id)
         if self.request.query_params.get("qualified") == "true":
             qs = qs.filter(is_qualified=True)
+        date_from, date_to = _resolve_date_range(self.request.query_params)
+        if date_from:
+            qs = qs.filter(commented_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(commented_at__date__lte=date_to)
         return qs
 
 
@@ -199,15 +223,24 @@ class PageCommentListView(generics.ListAPIView):
 def lead_stats_by_adset(request):
     """
     Aggregate lead stats grouped by active Facebook Page.
-    Since most conversations come from polling (no referral_adset_id),
-    we group by page instead of adset to keep stats meaningful.
+    Query params: date_from, date_to (YYYY-MM-DD, optional).
     """
     from django.db.models import Count, Q
 
+    date_from, date_to = _resolve_date_range(request.query_params)
+
+    conv_qs = Conversation.objects.filter(page__is_active=True)
+    comment_qs = PageComment.objects.filter(page__is_active=True)
+    if date_from:
+        conv_qs = conv_qs.filter(first_message_at__date__gte=date_from)
+        comment_qs = comment_qs.filter(commented_at__date__gte=date_from)
+    if date_to:
+        conv_qs = conv_qs.filter(first_message_at__date__lte=date_to)
+        comment_qs = comment_qs.filter(commented_at__date__lte=date_to)
+
     # All conversations from active pages, grouped by page
     page_stats = list(
-        Conversation.objects
-        .filter(page__is_active=True)
+        conv_qs
         .values("page__page_id", "page__name")
         .annotate(
             inbox_total=Count("id"),
@@ -220,8 +253,7 @@ def lead_stats_by_adset(request):
     # Comments from active pages, grouped by page
     comment_stats = {
         s["page__page_id"]: s["comment_total"]
-        for s in PageComment.objects
-        .filter(page__is_active=True)
+        for s in comment_qs
         .values("page__page_id")
         .annotate(comment_total=Count("id"))
     }
@@ -255,7 +287,7 @@ def deep_funnel_by_ad(request):
     """
     Deep funnel metrics per ad: Meta spend + AI-classified conversation quality.
     Returns True CPL (cost per phone lead) — the North Star metric.
-    Query params: adset_id (optional filter)
+    Query params: adset_id (optional), date_from, date_to (YYYY-MM-DD, optional).
     """
     from apps.meta_ads.models import Ad
 
@@ -263,10 +295,12 @@ def deep_funnel_by_ad(request):
     if adset_id := request.query_params.get("adset_id"):
         qs = qs.filter(adset__adset_id=adset_id)
 
+    date_from, date_to = _resolve_date_range(request.query_params)
+
     result = []
     for ad in qs:
         try:
-            metrics = gather_deep_funnel_metrics(ad.ad_id)
+            metrics = gather_deep_funnel_metrics(ad.ad_id, date_from=date_from, date_to=date_to)
             result.append({
                 **metrics,
                 "ad_name": ad.name,
@@ -297,3 +331,64 @@ def score_all_unscored(request):
     for conv_id in unscored_ids:
         score_lead.delay(conv_id)
     return Response({"queued": len(unscored_ids), "message": f"Đang phân loại {len(unscored_ids)} cuộc hội thoại chưa được AI đánh giá."})
+
+
+class AppointmentListView(generics.ListAPIView):
+    serializer_class = AppointmentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = Appointment.objects.select_related("page", "conversation").order_by("-detected_at")
+        date_from, date_to = _resolve_date_range(self.request.query_params)
+        if date_from:
+            qs = qs.filter(detected_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(detected_at__date__lte=date_to)
+        if adset_id := self.request.query_params.get("adset_id"):
+            qs = qs.filter(adset_id=adset_id)
+        if status_param := self.request.query_params.get("status"):
+            qs = qs.filter(status=status_param.upper())
+        return qs
+
+
+class AppointmentDetailView(generics.UpdateAPIView):
+    serializer_class = AppointmentSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = Appointment.objects.all()
+    http_method_names = ["patch"]
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def scan_appointments(request):
+    """
+    Scan existing outbound messages in DB for appointment patterns (both types).
+    Call this once to backfill appointments from historical messages.
+    """
+    from django.db.models import Q
+    from .services import _detect_and_save_appointment
+
+    # Match either appointment confirmation OR post-service thank-you
+    messages = (
+        Message.objects
+        .filter(
+            direction=Message.Direction.OUTBOUND,
+        )
+        .filter(
+            Q(text__contains="xác nhận lịch hẹn") |
+            Q(text__contains="cảm ơn") & Q(text__contains="sử dụng dịch vụ")
+        )
+        .select_related("conversation__page")
+        .order_by("sent_at")  # process oldest first so SCHEDULED is created before COMPLETED
+    )
+    total_scanned = messages.count()
+    created = 0
+    for msg in messages:
+        conv = msg.conversation
+        before = Appointment.objects.filter(conversation=conv).count()
+        _detect_and_save_appointment(msg.text, conv, conv.page)
+        after = Appointment.objects.filter(conversation=conv).count()
+        if after > before:
+            created += 1
+
+    return Response({"scanned": total_scanned, "appointments_created": created})

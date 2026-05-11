@@ -4,6 +4,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   Brain, RefreshCw, Sparkles, Phone, Calendar, TrendingUp, AlertTriangle, Filter,
 } from "lucide-react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { useFilterStore } from "@/store/useFilterStore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -63,6 +65,7 @@ export default function DeepFunnelPage() {
   const [activeAd, setActiveAd] = useState<DeepFunnelMetrics | null>(null);
   const queryClient = useQueryClient();
 
+  const { leadsDateRange, leadsCustomStart, leadsCustomEnd, setLeadsDateRange, setLeadsCustomDates } = useFilterStore();
   const { data: raw = [], isLoading } = useDeepFunnel();
   const { mutate: scoreAll, isPending: scoring } = useScoreAllLeads();
 
@@ -126,6 +129,17 @@ export default function DeepFunnelPage() {
             Refresh
           </Button>
         </div>
+      </div>
+
+      {/* ── Date filter ── */}
+      <div className="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 px-4 py-3 shadow-sm">
+        <DateRangeFilter
+          value={leadsDateRange}
+          customStart={leadsCustomStart}
+          customEnd={leadsCustomEnd}
+          onChange={setLeadsDateRange}
+          onCustomChange={setLeadsCustomDates}
+        />
       </div>
 
       {/* ── KPI row ── */}
