@@ -1,13 +1,13 @@
 "use client";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Calendar, Phone, Stethoscope, RefreshCw, ScanSearch } from "lucide-react";
+import { Calendar, Phone, Stethoscope, RefreshCw, ScanSearch, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { useFilterStore } from "@/store/useFilterStore";
-import { appointmentApi, Appointment } from "@/services/api";
+import { appointmentApi, Appointment, AppointmentAdStat } from "@/services/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -107,6 +107,66 @@ function AppointmentCard({ appt }: { appt: Appointment }) {
       )}
 
       <p className="text-[10px] text-gray-400">Phát hiện: {fmtDetected(appt.detected_at)}</p>
+    </div>
+  );
+}
+
+// ── Ad attribution stats table ────────────────────────────────────────────────
+
+function AdStatsTable({ params }: { params: Record<string, unknown> }) {
+  const { data: stats = [], isLoading } = useQuery({
+    queryKey: ["appointment-ad-stats", params],
+    queryFn: async () => {
+      const { data } = await appointmentApi.adStats(params as Parameters<typeof appointmentApi.adStats>[0]);
+      return data;
+    },
+  });
+
+  if (isLoading) return <Skeleton className="h-28 rounded-xl" />;
+  if (stats.length === 0) return (
+    <div className="bg-white rounded-xl border shadow-sm p-5 text-center text-sm text-gray-400">
+      <TrendingUp className="h-6 w-6 mx-auto mb-2 opacity-30" />
+      <p>Chưa có dữ liệu tracking theo quảng cáo.</p>
+      <p className="text-xs mt-1">Dữ liệu sẽ xuất hiện khi khách nhắn tin qua quảng cáo (webhook real-time).</p>
+    </div>
+  );
+
+  return (
+    <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+        <TrendingUp className="h-4 w-4 text-violet-600" />
+        <span className="text-sm font-semibold text-gray-800">Thống kê theo quảng cáo</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100 bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+              <th className="px-4 py-2.5 text-left">Ad ID</th>
+              <th className="px-4 py-2.5 text-right">Tổng hội thoại</th>
+              <th className="px-4 py-2.5 text-right">Có SĐT</th>
+              <th className="px-4 py-2.5 text-right">Lịch hẹn</th>
+              <th className="px-4 py-2.5 text-right">Đã thực hiện</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {stats.map((s: AppointmentAdStat) => (
+              <tr key={s.ad_id} className="hover:bg-gray-50 transition-colors">
+                <td className="px-4 py-2.5 font-mono text-xs text-gray-600">{s.ad_id || "—"}</td>
+                <td className="px-4 py-2.5 text-right text-gray-700">{s.total_conversations}</td>
+                <td className="px-4 py-2.5 text-right">
+                  <span className="font-semibold text-blue-700">{s.phone_numbers}</span>
+                </td>
+                <td className="px-4 py-2.5 text-right">
+                  <span className="font-semibold text-violet-700">{s.appointments}</span>
+                </td>
+                <td className="px-4 py-2.5 text-right">
+                  <span className="font-semibold text-green-700">{s.completed}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -212,6 +272,9 @@ export default function AppointmentsPage() {
           </div>
         ))}
       </div>
+
+      {/* Per-ad attribution */}
+      <AdStatsTable params={dateParams} />
 
       {/* Status filter tabs */}
       <div className="flex gap-1 border-b border-gray-100">

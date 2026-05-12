@@ -12,5 +12,6 @@ urlpatterns = [
     path("leads/score-all/", views.score_all_unscored, name="score-all"),
     path("appointments/", views.AppointmentListView.as_view(), name="appointment-list"),
     path("appointments/scan/", views.scan_appointments, name="appointment-scan"),
+    path("appointments/ad-stats/", views.appointment_ad_stats, name="appointment-ad-stats"),
     path("appointments/<int:pk>/", views.AppointmentDetailView.as_view(), name="appointment-detail"),
 ]

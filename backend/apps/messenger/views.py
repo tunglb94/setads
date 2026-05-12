@@ -39,6 +39,7 @@ from .services import (
     get_page_webhook_subscriptions,
     sync_page_comments,
     gather_deep_funnel_metrics,
+    APPOINTMENT_PAGE_IDS,
 )
 from .tasks import score_lead
 
@@ -338,7 +339,10 @@ class AppointmentListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = Appointment.objects.select_related("page", "conversation").order_by("-detected_at")
+        qs = (Appointment.objects
+              .filter(page__page_id__in=APPOINTMENT_PAGE_IDS)
+              .select_related("page", "conversation")
+              .order_by("-detected_at"))
         date_from, date_to = _resolve_date_range(self.request.query_params)
         if date_from:
             qs = qs.filter(detected_at__date__gte=date_from)
@@ -346,6 +350,8 @@ class AppointmentListView(generics.ListAPIView):
             qs = qs.filter(detected_at__date__lte=date_to)
         if adset_id := self.request.query_params.get("adset_id"):
             qs = qs.filter(adset_id=adset_id)
+        if ad_id := self.request.query_params.get("ad_id"):
+            qs = qs.filter(ad_id=ad_id)
         if status_param := self.request.query_params.get("status"):
             qs = qs.filter(status=status_param.upper())
         return qs
@@ -363,23 +369,23 @@ class AppointmentDetailView(generics.UpdateAPIView):
 def scan_appointments(request):
     """
     Scan existing outbound messages in DB for appointment patterns (both types).
-    Call this once to backfill appointments from historical messages.
+    Restricted to APPOINTMENT_PAGE_IDS. Process oldest-first so SCHEDULED is created before COMPLETED.
     """
     from django.db.models import Q
     from .services import _detect_and_save_appointment
 
-    # Match either appointment confirmation OR post-service thank-you
     messages = (
         Message.objects
         .filter(
             direction=Message.Direction.OUTBOUND,
+            conversation__page__page_id__in=APPOINTMENT_PAGE_IDS,
         )
         .filter(
             Q(text__contains="xác nhận lịch hẹn") |
             Q(text__contains="cảm ơn") & Q(text__contains="sử dụng dịch vụ")
         )
         .select_related("conversation__page")
-        .order_by("sent_at")  # process oldest first so SCHEDULED is created before COMPLETED
+        .order_by("sent_at")
     )
     total_scanned = messages.count()
     created = 0
@@ -392,3 +398,67 @@ def scan_appointments(request):
             created += 1
 
     return Response({"scanned": total_scanned, "appointments_created": created})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def appointment_ad_stats(request):
+    """
+    Per-ad attribution stats: how many phone numbers and appointments each ad drove.
+    Only counts conversations/appointments from the 3 target pages with non-empty referral_ad_id.
+    Query params: date_from, date_to (YYYY-MM-DD, optional).
+    """
+    from django.db.models import Count, Q
+
+    date_from, date_to = _resolve_date_range(request.query_params)
+
+    conv_qs = (Conversation.objects
+               .filter(page__page_id__in=APPOINTMENT_PAGE_IDS)
+               .exclude(referral_ad_id=""))
+    appt_qs = (Appointment.objects
+               .filter(page__page_id__in=APPOINTMENT_PAGE_IDS)
+               .exclude(ad_id=""))
+
+    if date_from:
+        conv_qs = conv_qs.filter(first_message_at__date__gte=date_from)
+        appt_qs = appt_qs.filter(detected_at__date__gte=date_from)
+    if date_to:
+        conv_qs = conv_qs.filter(first_message_at__date__lte=date_to)
+        appt_qs = appt_qs.filter(detected_at__date__lte=date_to)
+
+    # Conversations per ad: total + those with a phone number
+    conv_stats = {
+        row["referral_ad_id"]: row
+        for row in conv_qs.values("referral_ad_id", "referral_adset_id").annotate(
+            total_convs=Count("id"),
+            phone_convs=Count("id", filter=Q(phone_number__gt="")),
+        )
+    }
+
+    # Appointments per ad
+    appt_stats = {
+        row["ad_id"]: row
+        for row in appt_qs.values("ad_id").annotate(
+            total_appts=Count("id"),
+            scheduled=Count("id", filter=Q(status="SCHEDULED")),
+            completed=Count("id", filter=Q(status="COMPLETED")),
+        )
+    }
+
+    all_ad_ids = set(conv_stats) | set(appt_stats)
+    result = []
+    for ad_id in all_ad_ids:
+        cv = conv_stats.get(ad_id, {})
+        ap = appt_stats.get(ad_id, {})
+        result.append({
+            "ad_id": ad_id,
+            "adset_id": cv.get("referral_adset_id", ""),
+            "total_conversations": cv.get("total_convs", 0),
+            "phone_numbers": cv.get("phone_convs", 0),
+            "appointments": ap.get("total_appts", 0),
+            "scheduled": ap.get("scheduled", 0),
+            "completed": ap.get("completed", 0),
+        })
+
+    result.sort(key=lambda x: x["appointments"], reverse=True)
+    return Response(result)

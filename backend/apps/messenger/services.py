@@ -53,6 +53,13 @@ EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
 MAX_RETRIES = 3
 
+# Only these pages participate in appointment detection (medical clinic pages)
+APPOINTMENT_PAGE_IDS = {
+    "938020412727426",
+    "116820031418925",
+    "168600259674136",
+}
+
 
 class MessengerAPIError(Exception):
     pass
@@ -595,7 +602,11 @@ def _detect_and_save_appointment(text: str, conv: Conversation, page: FacebookPa
     Run appointment detector on an outbound message. Two patterns trigger an Appointment:
     1. Appointment confirmation → status=SCHEDULED
     2. Post-service thank-you  → status=COMPLETED (they already showed up)
+    Only runs for pages listed in APPOINTMENT_PAGE_IDS.
     """
+    if page.page_id not in APPOINTMENT_PAGE_IDS:
+        return
+
     # Pattern 1: appointment confirmation
     appt_data = extract_appointment_from_message(text)
     if appt_data:
@@ -604,6 +615,7 @@ def _detect_and_save_appointment(text: str, conv: Conversation, page: FacebookPa
             appointment_date=appt_data["appointment_date"],
             defaults={
                 "page": page,
+                "ad_id": conv.referral_ad_id,
                 "adset_id": conv.referral_adset_id,
                 "patient_name": appt_data["patient_name"],
                 "phone": appt_data["phone"] or conv.phone_number,
@@ -632,6 +644,7 @@ def _detect_and_save_appointment(text: str, conv: Conversation, page: FacebookPa
             Appointment.objects.create(
                 conversation=conv,
                 page=page,
+                ad_id=conv.referral_ad_id,
                 adset_id=conv.referral_adset_id,
                 patient_name=conv.user_name,
                 phone=conv.phone_number,

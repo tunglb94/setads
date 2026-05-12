@@ -214,6 +214,7 @@ export const statsApi = {
 export interface Appointment {
   id: number;
   page_name: string;
+  ad_id: string;
   adset_id: string;
   patient_name: string;
   patient_name_display: string;
@@ -225,8 +226,18 @@ export interface Appointment {
   detected_at: string;
 }
 
+export interface AppointmentAdStat {
+  ad_id: string;
+  adset_id: string;
+  total_conversations: number;
+  phone_numbers: number;
+  appointments: number;
+  scheduled: number;
+  completed: number;
+}
+
 export const appointmentApi = {
-  list: (params?: { date_from?: string; date_to?: string; days?: number; adset_id?: string; page_size?: number }) =>
+  list: (params?: { date_from?: string; date_to?: string; days?: number; adset_id?: string; ad_id?: string; page_size?: number }) =>
     api.get<PaginatedResponse<Appointment>>("/appointments/", { params }),
 
   scan: () =>
@@ -234,6 +245,9 @@ export const appointmentApi = {
 
   updateStatus: (id: number, status: Appointment["status"]) =>
     api.patch(`/appointments/${id}/`, { status }),
+
+  adStats: (params?: { date_from?: string; date_to?: string; days?: number }) =>
+    api.get<AppointmentAdStat[]>("/appointments/ad-stats/", { params }),
 };
 
 export const authApi = {
