@@ -1,8 +1,8 @@
 "use client";
 import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Brain, RefreshCw, Sparkles, Phone, Calendar, TrendingUp, AlertTriangle, Filter,
+  Brain, RefreshCw, Sparkles, Phone, Calendar, TrendingUp, AlertTriangle, Filter, CheckCircle,
 } from "lucide-react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { useFilterStore } from "@/store/useFilterStore";
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { useDeepFunnel, useScoreAllLeads, type DeepFunnelMetrics } from "@/hooks/queries/useDeepFunnel";
 import { DeepFunnelTable } from "@/components/deep-funnel/DeepFunnelTable";
 import { LiveAnalyzerPanel } from "@/components/deep-funnel/LiveAnalyzerPanel";
+import { appointmentApi } from "@/services/api";
 
 // ── Summary KPI cards ──────────────────────────────────────────────────────────
 interface KpiProps {
@@ -69,13 +70,33 @@ export default function DeepFunnelPage() {
   const { data: raw = [], isLoading } = useDeepFunnel();
   const { mutate: scoreAll, isPending: scoring } = useScoreAllLeads();
 
+  const dateParams = leadsDateRange === "custom" && leadsCustomStart && leadsCustomEnd
+    ? { date_from: leadsCustomStart, date_to: leadsCustomEnd }
+    : { days: leadsDateRange as number };
+
+  // Real appointments from Appointment model (not estimates)
+  const { data: apptData } = useQuery({
+    queryKey: ["appointments-summary", dateParams],
+    queryFn: async () => {
+      const { data } = await appointmentApi.list({ ...dateParams, page_size: 500 } as any);
+      const list = Array.isArray(data) ? data : (data as any).results ?? [];
+      return {
+        total: list.length,
+        scheduled: list.filter((a: any) => a.status === "SCHEDULED").length,
+        completed: list.filter((a: any) => a.status === "COMPLETED").length,
+      };
+    },
+    staleTime: 60_000,
+  });
+
   const data = filterData(raw, filter);
 
   // Aggregate KPIs from all ads
   const totalSpend   = raw.reduce((a, d) => a + d.total_spend, 0);
   const totalConvs   = raw.reduce((a, d) => a + d.total_conversations, 0);
   const totalPhones  = raw.reduce((a, d) => a + d.qualified_leads, 0);
-  const totalAppts   = raw.reduce((a, d) => a + d.appointment_count, 0);
+  const totalAppts   = apptData?.total ?? 0;
+  const totalCompleted = apptData?.completed ?? 0;
   const totalSpam    = raw.reduce((a, d) => a + d.spam_count, 0);
   const totalScored  = raw.reduce((a, d) => a + d.scored_count, 0);
   const trueCpl      = totalPhones > 0 ? Math.round(totalSpend / totalPhones) : 0;
@@ -153,9 +174,9 @@ export default function DeepFunnelPage() {
           valueCls={trueCpl === 0 ? "text-gray-400 text-base" : trueCpl <= 1_000_000 ? "text-emerald-700" : trueCpl <= 2_000_000 ? "text-amber-700" : trueCpl <= 3_000_000 ? "text-orange-600" : "text-red-700"}
         />
         <KpiCard
-          label="Lịch hẹn (Appointment)"
+          label="Lịch hẹn thực tế"
           value={totalAppts}
-          sub={`từ ${totalConvs} hội thoại`}
+          sub={`${totalCompleted} đã thực hiện · ${totalAppts - totalCompleted} chưa đến`}
           icon={Calendar}
           iconCls="bg-purple-100"
           valueCls="text-purple-700"

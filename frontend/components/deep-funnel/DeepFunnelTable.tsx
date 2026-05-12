@@ -108,9 +108,9 @@ const COLUMNS = [
 
   col.display({
     id: "funnel_msgs",
-    header: "📩 Inbox | 💬 Comment",
+    header: "📩 Inbox | 💬 Comment | 📞 SĐT",
     cell: ({ row }) => {
-      const { total_inbox, total_comments, total_conversations, qualified_leads, appointment_count, spam_count, spam_rate, scored_count, cost_per_message, qualified_rate } = row.original;
+      const { total_inbox, total_comments, total_conversations, qualified_leads, spam_count, spam_rate, scored_count, cost_per_message, qualified_rate } = row.original;
       const inbox = total_inbox ?? total_conversations ?? 0;
       const comments = total_comments ?? 0;
       const spamHigh = spam_rate > 30;
@@ -121,8 +121,8 @@ const COLUMNS = [
         cost_per_message <= 700_000 ? "text-orange-600" :
         "text-red-600";
       return (
-        <div className="min-w-[200px] space-y-1">
-          {/* Row 1: 📩 Inbox | 💬 Comment → 📞 SĐT → 📅 Lịch */}
+        <div className="min-w-[180px] space-y-1">
+          {/* Row 1: 📩 Inbox | 💬 Comment → 📞 SĐT */}
           <div className="flex items-center gap-1 flex-wrap">
             <span className="flex items-center gap-0.5 bg-violet-100 text-violet-800 text-xs font-bold px-1.5 py-0.5 rounded">
               📩{inbox}
@@ -134,10 +134,6 @@ const COLUMNS = [
             <span className="text-gray-300 text-xs">➡️</span>
             <span className="flex items-center gap-0.5 bg-green-100 text-green-800 text-xs font-bold px-1.5 py-0.5 rounded">
               <Phone className="h-3 w-3" />{qualified_leads}
-            </span>
-            <span className="text-gray-300 text-xs">➡️</span>
-            <span className="flex items-center gap-0.5 bg-purple-100 text-purple-800 text-xs font-bold px-1.5 py-0.5 rounded">
-              <Calendar className="h-3 w-3" />{appointment_count}
             </span>
           </div>
           {/* Row 2: CPL inbox + tỷ lệ SĐT */}
@@ -161,6 +157,23 @@ const COLUMNS = [
         </div>
       );
     },
+  }),
+
+  col.accessor("appointment_count", {
+    header: "📅 Lịch hẹn",
+    cell: (info) => {
+      const count = info.getValue();
+      if (count === 0) return <span className="text-gray-300 text-xs font-mono">—</span>;
+      return (
+        <div className="text-center">
+          <span className="inline-flex items-center gap-1 bg-purple-100 text-purple-800 text-sm font-bold px-2.5 py-1 rounded-lg">
+            <Calendar className="h-3.5 w-3.5" />
+            {count}
+          </span>
+        </div>
+      );
+    },
+    sortingFn: "basic",
   }),
 
   col.accessor("cost_per_qualified_lead", {
@@ -243,10 +256,11 @@ function SkeletonRows() {
           <TableCell><Skeleton className="h-9 w-40" /></TableCell>
           <TableCell><Skeleton className="h-4 w-24" /></TableCell>
           <TableCell><Skeleton className="h-8 w-28" /></TableCell>
-          <TableCell><Skeleton className="h-8 w-32" /></TableCell>
+          <TableCell><Skeleton className="h-8 w-16" /></TableCell>
           <TableCell><Skeleton className="h-8 w-24" /></TableCell>
-          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+          <TableCell><Skeleton className="h-8 w-20" /></TableCell>
           <TableCell><Skeleton className="h-5 w-16 rounded-full" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
           <TableCell><Skeleton className="h-7 w-20 rounded" /></TableCell>
         </TableRow>
       ))}
@@ -258,7 +272,7 @@ function SkeletonRows() {
 function EmptyState() {
   return (
     <TableRow className="hover:bg-transparent">
-      <TableCell colSpan={8}>
+      <TableCell colSpan={9}>
         <div className="py-20 text-center space-y-3">
           <Brain className="h-12 w-12 mx-auto text-gray-200" />
           <p className="text-gray-500 font-medium">Chưa có dữ liệu Deep Funnel</p>

@@ -751,6 +751,12 @@ def gather_deep_funnel_metrics(ad_id: str, date_from: str | None = None, date_to
         else:
             scored_count = spam_count = appointment_count = hot_count = warm_count = 0
 
+    # Real appointment count from Appointment model (accurate for webhook-attributed convs)
+    from apps.messenger.models import Appointment as ApptModel
+    real_appt_count = ApptModel.objects.filter(
+        django_models.Q(ad_id=ad_id) | django_models.Q(conversation__referral_ad_id=ad_id)
+    ).exclude(status="CANCELLED").count()
+
     # Calculate CPL using ONLY inbox messages, disregarding comments completely
     cost_per_message = round(total_spend / total_inbox) if total_inbox > 0 else 0
     cost_per_qualified_lead = round(total_spend / qualified_convs) if qualified_convs > 0 else 0
@@ -771,7 +777,7 @@ def gather_deep_funnel_metrics(ad_id: str, date_from: str | None = None, date_to
         "hot_leads": hot_count,
         "warm_leads": warm_count,
         "spam_count": spam_count,
-        "appointment_count": appointment_count,
+        "appointment_count": real_appt_count,
         "scored_count": scored_count,
         "cost_per_message": cost_per_message,
         "cost_per_qualified_lead": cost_per_qualified_lead,
