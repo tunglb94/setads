@@ -205,7 +205,10 @@ export default function AppointmentsPage() {
   const { mutate: scan, isPending: scanning } = useMutation({
     mutationFn: () => appointmentApi.scan(),
     onSuccess: (res) => {
-      toast.success(`Quét xong: tìm thấy ${res.data.appointments_created} lịch hẹn mới`);
+      const msg = res.data.appointments_created > 0
+        ? `Tìm thấy ${res.data.appointments_created} lịch hẹn mới · Đồng bộ Meta đang chạy nền, làm mới sau 1 phút`
+        : `Đã quét ${res.data.scanned} tin nhắn · Đồng bộ Meta đang chạy nền, làm mới sau 1 phút`;
+      toast.success(msg, { duration: 6000 });
       qc.invalidateQueries({ queryKey: ["appointments"] });
     },
     onError: () => toast.error("Quét thất bại"),

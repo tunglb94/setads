@@ -241,7 +241,7 @@ export const appointmentApi = {
     api.get<PaginatedResponse<Appointment>>("/appointments/", { params }),
 
   scan: () =>
-    api.post<{ scanned: number; appointments_created: number }>("/appointments/scan/"),
+    api.post<{ scanned: number; appointments_created: number }>("/appointments/scan/", {}, { timeout: 15_000 }),
 
   updateStatus: (id: number, status: Appointment["status"]) =>
     api.patch(`/appointments/${id}/`, { status }),

@@ -135,6 +135,22 @@ class Appointment(models.Model):
         return f"{self.patient_name or '?'} | {self.appointment_date} | {self.service[:30]}"
 
 
+class ConversationAdTouchpoint(models.Model):
+    """
+    Every ad click that touches a conversation — fires via messaging_referrals webhook.
+    One conversation can have multiple touchpoints (user clicks different ads over time).
+    """
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="ad_touchpoints")
+    ad_id = models.CharField(max_length=50, db_index=True)
+    adset_id = models.CharField(max_length=50, blank=True)
+    campaign_id = models.CharField(max_length=50, blank=True)
+    clicked_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "conversation_ad_touchpoints"
+        ordering = ["-clicked_at"]
+
+
 class LeadScore(models.Model):
     """
     AI-generated quality score for a lead conversation.

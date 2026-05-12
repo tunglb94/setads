@@ -368,22 +368,16 @@ class AppointmentDetailView(generics.UpdateAPIView):
 @permission_classes([IsAuthenticated])
 def scan_appointments(request):
     """
-    Sync fresh messages from Meta API for all target pages, then scan DB for appointment patterns.
-    Processing oldest-first ensures SCHEDULED is created before COMPLETED for same conversation.
+    Kick off a background sync of Meta messages, then scan the local DB for appointment patterns.
+    The sync runs async (Celery) so this returns quickly; scanning uses whatever is already in DB.
     """
     from django.db.models import Q
-    from .services import _detect_and_save_appointment, sync_page_conversations
+    from .services import _detect_and_save_appointment
+    from .tasks import sync_all_pages
 
-    # Pull latest messages from Meta before scanning so we don't miss recent sends
-    target_pages = FacebookPage.objects.filter(
-        page_id__in=APPOINTMENT_PAGE_IDS, is_active=True
-    )
+    # Fire sync as a background task (don't block — 4 pages × 150 convs × API calls = 45+ sec)
     days = int(request.data.get("days", 30))
-    for page in target_pages:
-        try:
-            sync_page_conversations(page, days_back=days)
-        except Exception:
-            logger.exception("Failed to sync page %s before scan", page.page_id)
+    sync_all_pages.apply_async(kwargs={"days_back": days}, countdown=0)
 
     messages = (
         Message.objects
@@ -415,55 +409,108 @@ def scan_appointments(request):
 @permission_classes([IsAuthenticated])
 def appointment_ad_stats(request):
     """
-    Per-ad attribution stats: how many phone numbers and appointments each ad drove.
-    Only counts conversations/appointments from the 3 target pages with non-empty referral_ad_id.
+    Per-ad attribution stats: conversations and appointments per ad.
+    Sources: referral_ad_id (first-contact) + ConversationAdTouchpoint (all subsequent clicks).
     Query params: date_from, date_to (YYYY-MM-DD, optional).
     """
     from django.db.models import Count, Q
+    from .models import ConversationAdTouchpoint
 
     date_from, date_to = _resolve_date_range(request.query_params)
 
+    # ── Conversations attributed via referral (first contact) ────────────────
     conv_qs = (Conversation.objects
                .filter(page__page_id__in=APPOINTMENT_PAGE_IDS)
                .exclude(referral_ad_id=""))
-    appt_qs = (Appointment.objects
-               .filter(page__page_id__in=APPOINTMENT_PAGE_IDS)
-               .exclude(ad_id=""))
-
     if date_from:
         conv_qs = conv_qs.filter(first_message_at__date__gte=date_from)
-        appt_qs = appt_qs.filter(detected_at__date__gte=date_from)
     if date_to:
         conv_qs = conv_qs.filter(first_message_at__date__lte=date_to)
+
+    conv_stats: dict[str, dict] = {}
+    for row in conv_qs.values("referral_ad_id", "referral_adset_id").annotate(
+        total_convs=Count("id"),
+        phone_convs=Count("id", filter=Q(phone_number__gt="")),
+    ):
+        conv_stats[row["referral_ad_id"]] = {
+            "adset_id": row["referral_adset_id"],
+            "total_convs": row["total_convs"],
+            "phone_convs": row["phone_convs"],
+        }
+
+    # ── Conversations attributed via touchpoints (subsequent clicks) ─────────
+    tp_qs = (ConversationAdTouchpoint.objects
+             .filter(conversation__page__page_id__in=APPOINTMENT_PAGE_IDS)
+             .exclude(ad_id=""))
+    if date_from:
+        tp_qs = tp_qs.filter(clicked_at__date__gte=date_from)
+    if date_to:
+        tp_qs = tp_qs.filter(clicked_at__date__lte=date_to)
+
+    for row in tp_qs.values("ad_id", "adset_id").annotate(
+        conv_count=Count("conversation_id", distinct=True),
+        phone_count=Count("conversation_id", distinct=True,
+                          filter=Q(conversation__phone_number__gt="")),
+    ):
+        ad = row["ad_id"]
+        if ad not in conv_stats:
+            conv_stats[ad] = {"adset_id": row["adset_id"], "total_convs": 0, "phone_convs": 0}
+        # Add touchpoint-only conversations (those not already counted via referral)
+        existing_conv_ids = set(conv_qs.filter(referral_ad_id=ad).values_list("id", flat=True))
+        touchpoint_conv_ids = set(
+            tp_qs.filter(ad_id=ad).values_list("conversation_id", flat=True)
+        )
+        new_ids = touchpoint_conv_ids - existing_conv_ids
+        if new_ids:
+            extra = Conversation.objects.filter(id__in=new_ids)
+            conv_stats[ad]["total_convs"] += extra.count()
+            conv_stats[ad]["phone_convs"] += extra.filter(phone_number__gt="").count()
+
+    # ── Appointments per ad (direct ad_id OR via touchpoint) ─────────────────
+    appt_qs = (Appointment.objects
+               .filter(page__page_id__in=APPOINTMENT_PAGE_IDS)
+               .exclude(status="CANCELLED"))
+    if date_from:
+        appt_qs = appt_qs.filter(detected_at__date__gte=date_from)
+    if date_to:
         appt_qs = appt_qs.filter(detected_at__date__lte=date_to)
 
-    # Conversations per ad: total + those with a phone number
-    conv_stats = {
-        row["referral_ad_id"]: row
-        for row in conv_qs.values("referral_ad_id", "referral_adset_id").annotate(
-            total_convs=Count("id"),
-            phone_convs=Count("id", filter=Q(phone_number__gt="")),
-        )
-    }
+    appt_stats: dict[str, dict] = {}
+    for row in appt_qs.exclude(ad_id="").values("ad_id").annotate(
+        total_appts=Count("id"),
+        scheduled=Count("id", filter=Q(status="SCHEDULED")),
+        completed=Count("id", filter=Q(status="COMPLETED")),
+    ):
+        appt_stats[row["ad_id"]] = {
+            "total_appts": row["total_appts"],
+            "scheduled": row["scheduled"],
+            "completed": row["completed"],
+        }
 
-    # Appointments per ad
-    appt_stats = {
-        row["ad_id"]: row
-        for row in appt_qs.values("ad_id").annotate(
-            total_appts=Count("id"),
-            scheduled=Count("id", filter=Q(status="SCHEDULED")),
-            completed=Count("id", filter=Q(status="COMPLETED")),
-        )
-    }
+    # Also count appointments where the conversation had a touchpoint for this ad
+    # (covers cases where appointment ad_id is empty but touchpoint exists)
+    for row in (appt_qs.filter(ad_id="")
+                .filter(conversation__ad_touchpoints__ad_id__gt="")
+                .values("conversation__ad_touchpoints__ad_id",
+                        "conversation__ad_touchpoints__adset_id")
+                .annotate(c=Count("id", distinct=True),
+                          sched=Count("id", distinct=True, filter=Q(status="SCHEDULED")),
+                          comp=Count("id", distinct=True, filter=Q(status="COMPLETED")))):
+        ad = row["conversation__ad_touchpoints__ad_id"]
+        if ad not in appt_stats:
+            appt_stats[ad] = {"total_appts": 0, "scheduled": 0, "completed": 0}
+        appt_stats[ad]["total_appts"] += row["c"]
+        appt_stats[ad]["scheduled"] += row["sched"]
+        appt_stats[ad]["completed"] += row["comp"]
 
     all_ad_ids = set(conv_stats) | set(appt_stats)
     result = []
-    for ad_id in all_ad_ids:
-        cv = conv_stats.get(ad_id, {})
-        ap = appt_stats.get(ad_id, {})
+    for aid in all_ad_ids:
+        cv = conv_stats.get(aid, {})
+        ap = appt_stats.get(aid, {})
         result.append({
-            "ad_id": ad_id,
-            "adset_id": cv.get("referral_adset_id", ""),
+            "ad_id": aid,
+            "adset_id": cv.get("adset_id", ""),
             "total_conversations": cv.get("total_convs", 0),
             "phone_numbers": cv.get("phone_convs", 0),
             "appointments": ap.get("total_appts", 0),

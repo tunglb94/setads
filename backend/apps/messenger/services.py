@@ -34,7 +34,7 @@ def _appsecret_proof(access_token: str) -> str:
 
 from django.db import models as django_models
 
-from .models import FacebookPage, Conversation, Message, LeadScore, PageComment, Appointment
+from .models import FacebookPage, Conversation, Message, LeadScore, PageComment, Appointment, ConversationAdTouchpoint
 
 logger = logging.getLogger(__name__)
 
@@ -274,8 +274,9 @@ def sync_pages_from_meta(access_token: str) -> list[dict]:
             defaults={
                 "name": p.get("name", ""),
                 "page_access_token": p.get("access_token", ""),
-                "is_active": True,
             },
+            # Only set is_active=True when first creating — don't override manual deactivation
+            create_defaults={"is_active": True},
         )
         result.append({"page_id": p["id"], "name": p["name"], "created": created})
         logger.info("%s FacebookPage %s (%s)", "Created" if created else "Updated", p["id"], p["name"])
@@ -530,11 +531,15 @@ def process_webhook_event(event: dict, page: FacebookPage) -> Optional[Conversat
     if not sender_id or sender_id == page.page_id:
         return None
 
-    # Ad attribution is only present on the FIRST message (postback or referral)
+    # Ad attribution: present on first message (postback) AND on every subsequent ad click
+    # (messaging_referrals fires each time user taps an ad button, even on existing threads)
     referral = messaging.get("referral") or messaging.get("postback", {}).get("referral", {})
     ad_id = referral.get("ad_id", "")
     adset_id = referral.get("adset_id", "")
     campaign_id = referral.get("campaign_id", "")
+
+    timestamp = messaging.get("timestamp", 0)
+    sent_at = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
 
     # get_or_create with IntegrityError guard against race condition:
     # Facebook can fire 2 webhooks within milliseconds (user double-taps send).
@@ -554,6 +559,20 @@ def process_webhook_event(event: dict, page: FacebookPage) -> Optional[Conversat
         )
     except IntegrityError:
         conv = Conversation.objects.get(psid=sender_id, page=page)
+
+    # Save ad touchpoint for every ad click (enables multi-ad attribution per conversation)
+    if ad_id:
+        ConversationAdTouchpoint.objects.get_or_create(
+            conversation=conv,
+            ad_id=ad_id,
+            clicked_at=sent_at,
+            defaults={"adset_id": adset_id, "campaign_id": campaign_id},
+        )
+        logger.info("Ad touchpoint saved: conv %s ← ad %s", conv.id, ad_id)
+
+    # Pure referral event (messaging_referrals) — no message body, just an ad click
+    if not msg_data:
+        return conv
 
     # Process the inbound message
     text = msg_data.get("text", "")
@@ -600,6 +619,14 @@ def process_webhook_event(event: dict, page: FacebookPage) -> Optional[Conversat
     return conv
 
 
+def _get_effective_ad_id(conv: Conversation) -> tuple[str, str]:
+    """Return (ad_id, adset_id) — most recent touchpoint takes priority over first-contact referral."""
+    tp = conv.ad_touchpoints.order_by("-clicked_at").first()
+    if tp and tp.ad_id:
+        return tp.ad_id, tp.adset_id
+    return conv.referral_ad_id, conv.referral_adset_id
+
+
 def _detect_and_save_appointment(text: str, conv: Conversation, page: FacebookPage) -> None:
     """
     Run appointment detector on an outbound message. Two patterns trigger an Appointment:
@@ -610,6 +637,8 @@ def _detect_and_save_appointment(text: str, conv: Conversation, page: FacebookPa
     if page.page_id not in APPOINTMENT_PAGE_IDS:
         return
 
+    effective_ad_id, effective_adset_id = _get_effective_ad_id(conv)
+
     # Pattern 1: appointment confirmation
     appt_data = extract_appointment_from_message(text)
     if appt_data:
@@ -618,8 +647,8 @@ def _detect_and_save_appointment(text: str, conv: Conversation, page: FacebookPa
             appointment_date=appt_data["appointment_date"],
             defaults={
                 "page": page,
-                "ad_id": conv.referral_ad_id,
-                "adset_id": conv.referral_adset_id,
+                "ad_id": effective_ad_id,
+                "adset_id": effective_adset_id,
                 "patient_name": appt_data["patient_name"],
                 "phone": appt_data["phone"] or conv.phone_number,
                 "appointment_time": appt_data["appointment_time"],
@@ -647,8 +676,8 @@ def _detect_and_save_appointment(text: str, conv: Conversation, page: FacebookPa
             Appointment.objects.create(
                 conversation=conv,
                 page=page,
-                ad_id=conv.referral_ad_id,
-                adset_id=conv.referral_adset_id,
+                ad_id=effective_ad_id,
+                adset_id=effective_adset_id,
                 patient_name=conv.user_name,
                 phone=conv.phone_number,
                 raw_message=text,
@@ -751,11 +780,13 @@ def gather_deep_funnel_metrics(ad_id: str, date_from: str | None = None, date_to
         else:
             scored_count = spam_count = appointment_count = hot_count = warm_count = 0
 
-    # Real appointment count from Appointment model (accurate for webhook-attributed convs)
+    # Real appointment count — check direct ad_id, first-contact referral, AND touchpoints
     from apps.messenger.models import Appointment as ApptModel
     real_appt_count = ApptModel.objects.filter(
-        django_models.Q(ad_id=ad_id) | django_models.Q(conversation__referral_ad_id=ad_id)
-    ).exclude(status="CANCELLED").count()
+        django_models.Q(ad_id=ad_id)
+        | django_models.Q(conversation__referral_ad_id=ad_id)
+        | django_models.Q(conversation__ad_touchpoints__ad_id=ad_id)
+    ).exclude(status="CANCELLED").distinct().count()
 
     # Calculate CPL using ONLY inbox messages, disregarding comments completely
     cost_per_message = round(total_spend / total_inbox) if total_inbox > 0 else 0
