@@ -368,11 +368,22 @@ class AppointmentDetailView(generics.UpdateAPIView):
 @permission_classes([IsAuthenticated])
 def scan_appointments(request):
     """
-    Scan existing outbound messages in DB for appointment patterns (both types).
-    Restricted to APPOINTMENT_PAGE_IDS. Process oldest-first so SCHEDULED is created before COMPLETED.
+    Sync fresh messages from Meta API for all target pages, then scan DB for appointment patterns.
+    Processing oldest-first ensures SCHEDULED is created before COMPLETED for same conversation.
     """
     from django.db.models import Q
-    from .services import _detect_and_save_appointment
+    from .services import _detect_and_save_appointment, sync_page_conversations
+
+    # Pull latest messages from Meta before scanning so we don't miss recent sends
+    target_pages = FacebookPage.objects.filter(
+        page_id__in=APPOINTMENT_PAGE_IDS, is_active=True
+    )
+    days = int(request.data.get("days", 30))
+    for page in target_pages:
+        try:
+            sync_page_conversations(page, days_back=days)
+        except Exception:
+            logger.exception("Failed to sync page %s before scan", page.page_id)
 
     messages = (
         Message.objects
@@ -382,7 +393,7 @@ def scan_appointments(request):
         )
         .filter(
             Q(text__contains="xác nhận lịch hẹn") |
-            Q(text__contains="cảm ơn") & Q(text__contains="sử dụng dịch vụ")
+            (Q(text__contains="tin tưởng") & Q(text__contains="dịch vụ"))
         )
         .select_related("conversation__page")
         .order_by("sent_at")

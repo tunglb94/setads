@@ -55,9 +55,10 @@ MAX_RETRIES = 3
 
 # Only these pages participate in appointment detection (medical clinic pages)
 APPOINTMENT_PAGE_IDS = {
-    "938020412727426",
-    "116820031418925",
-    "168600259674136",
+    "938020412727426",    # Bác sĩ CKI Hoàng Vũ - Viện da liễu V Medical
+    "116820031418925",    # Bác sĩ Cao Trần Quân - Viện Da Liễu V Medical
+    "168600259674136",    # Phòng Khám Thẩm Mỹ V-Medical
+    "292914017242679",    # Bác sĩ Cao Trần Quân - V Medical Clinic
 }
 
 
@@ -410,7 +411,9 @@ _APPT_TRIGGER = re.compile(
     re.IGNORECASE,
 )
 _COMPLETED_TRIGGER = re.compile(
-    r'cảm\s+ơn.*đã.*(?:tin\s+tưởng|lựa\s+chọn).*(?:sử\s+dụng|trải\s+nghiệm)\s+dịch\s+vụ',
+    # Matches both "cảm ơn" (ả) and "cám ơn" (á) — staff use both spellings.
+    # Requires thank-you + trust/choice + service keywords to appear together.
+    r'c[aáảắặầẩẫậằẳẵ]m\s+ơn.*(?:tin\s+tưởng|lựa\s+chọn).*dịch\s+vụ',
     re.IGNORECASE | re.DOTALL,
 )
 
